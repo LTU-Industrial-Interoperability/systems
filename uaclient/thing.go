@@ -37,9 +37,17 @@ import (
 
 // -------------------------------------Define the unit asset
 // Traits are Asset-specific configurable parameters
+type Security struct {
+	Mode string `json:"mode"`
+	Policy string `json:"policy"`
+	Certfile string `json:"certfile"`
+	Keyfile string `json:"keyfile"`
+}
+
 type Traits struct {
 	ServerAdrress string              `json:"serverAddress"`
 	NodeList      map[string][]string `json:"NodeList"`
+	Security 	  Security             `json:"security"`
 	Server        *opcua.Client
 	NodeID        *ua.NodeID
 	NodeClass     ua.NodeClass
@@ -122,6 +130,12 @@ func initTemplate() components.UnitAsset {
 		Details: map[string][]string{"PLC": {"Prosys_Simulation_Server"}, "Location": {"Line_1"}, "KKS": {"YLLCP001"}},
 		Traits: Traits{
 			ServerAdrress: "opc.tcp://192.168.1.2:53530/OPCUA/SimulationServer",
+			Security: Security {
+				Mode:     "SignAndEncrypt",
+				Policy:   "http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256",
+				Certfile: "cert.pem",
+				Keyfile:  "key.pem", 
+			},
 		},
 		ServicesMap: components.Services{
 			browse.SubPath: &browse,
@@ -145,7 +159,35 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	endpoint := plcConfig.ServerAdrress
-	opcuaClient, err := opcua.NewClient(endpoint)
+	endpoints, err := opcua.GetEndpoints(ctx, endpoint)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	securityPolicy := plcConfig.Security.Policy
+	securityMode := ua.MessageSecurityModeFromString(plcConfig.Security.Mode)
+	certFile := plcConfig.Security.Certfile
+	keyFile := plcConfig.Security.Keyfile
+	authMode := ua.UserTokenTypeAnonymous
+
+	ep, err := opcua.SelectEndpoint(endpoints, securityPolicy, securityMode)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Check that the selected endpoint is a valid combo
+	err = validateEndpointConfig(endpoints, securityPolicy, securityMode, authMode)
+	if err != nil {
+		log.Fatalf("error validating input: %s", err)
+	}
+
+	opts := []opcua.Option{
+		opcua.AuthAnonymous(),
+		opcua.CertificateFile(certFile),
+		opcua.PrivateKeyFile(keyFile),
+		opcua.SecurityFromEndpoint(ep, authMode),
+	}
+
+	opcuaClient, err := opcua.NewClient(endpoint, opts...)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -487,4 +529,19 @@ func browse(ctx context.Context, n *opcua.Node, path string, level int) ([]NodeD
 		return nil, err
 	}
 	return nodes, nil
+}
+
+func validateEndpointConfig(endpoints []*ua.EndpointDescription, secPolicy string, secMode ua.MessageSecurityMode, authMode ua.UserTokenType) error {
+	for _, e := range endpoints {
+		if e.SecurityMode == secMode && e.SecurityPolicyURI == secPolicy {
+			for _, t := range e.UserIdentityTokens {
+				if t.TokenType == authMode {
+					return nil
+				}
+			}
+		}
+	}
+
+	err := errors.Errorf("server does not support an endpoint with security : %s , %s, %s", secPolicy, secMode, authMode)
+	return err
 }
