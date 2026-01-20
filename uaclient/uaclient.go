@@ -74,7 +74,9 @@ func main() {
 		ua, cleanup := newResource(uac, &sys)
 		cleanups = append(cleanups, cleanup)
 		// defer cleanup()
-		sys.UAssets[ua.GetName()] = &ua
+		for _, nua := range ua {
+			sys.UAssets[nua.GetName()] = &nua
+		}
 	}
 
 	// Generate PKI keys and CSR to obtain a authentication certificate from the CA
