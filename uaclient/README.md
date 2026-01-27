@@ -25,7 +25,7 @@ The herewith Arrowhead framework system must be configured at deployment time fo
             "Node_Id": [
                 "ns=3;i=1002"
             ]
-},
+         },
          "Server": null,
          "NodeID": null,
          "NodeClass": 0,
