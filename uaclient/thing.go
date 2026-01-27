@@ -207,9 +207,9 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	if err != nil {
 		log.Fatalf("invalid node id: %s", err)
 	}
-	// uasset.Details = uac.Details
-	// Create a new instance of components.Services since each resources has its own set of services
-	// uasset.ServicesMap = components.CloneServices(servs)
+	uasset.Details = configuredAsset.Details
+	// Create a new instance of components.Services since each resource has its own set of services
+	uasset.ServicesMap = usecases.MakeServiceMap(configuredAsset.Services)
 	uasset.Owner = sys
 	nodelist = append(nodelist, uasset)
 
@@ -228,9 +228,9 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 				fmt.Printf("Node %s browsing errror %s", nodeId, err)
 			}
 			newUA.Name = nodeList[0].BrowseName
-			// newUA.Details = uac.Details
+			newUA.Details = configuredAsset.Details
 			// Create a new instance of components.Services since each resources has its own set of services
-			// newUA.ServicesMap = components.CloneServices(servs)
+			newUA.ServicesMap = usecases.MakeServiceMap(configuredAsset.Services)
 
 			newUA.Owner = sys
 			nodelist = append(nodelist, newUA)
