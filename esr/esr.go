@@ -47,6 +47,7 @@ func main() {
 	sys.Husk = &components.Husk{
 		Description: "is an Arrowhead mandatory core system that keeps track of the currently available services.",
 		Details:     map[string][]string{"Developer": {"Synecdoque"}, "LocalCloud": {"AlphaCloud"}},
+		Host:        components.NewDevice(),
 		ProtoPort:   map[string]int{"https": 0, "http": 20102, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/systems/tree/main/esr",
 		DName: pkix.Name{
@@ -57,6 +58,8 @@ func main() {
 			Province:           []string{"Norrbotten"},
 			Country:            []string{"SE"},
 		},
+		RegistrarChan: make(chan *components.CoreSystem, 1),
+		Messengers:    make(map[string]int),
 	}
 
 	// instantiate a template unit asset
@@ -407,7 +410,7 @@ func (ua *UnitAsset) Role() {
 
 // peerslist provides a list of the other service registrars in the local cloud
 func peersList(sys *components.System) (peers []*components.CoreSystem, err error) {
-	for _, cs := range sys.CoreS {
+	for _, cs := range sys.Husk.CoreS {
 		if cs.Name != "serviceregistrar" {
 			continue
 		}
@@ -419,7 +422,7 @@ func peersList(sys *components.System) (peers []*components.CoreSystem, err erro
 		if err != nil {
 			fmt.Println(err)
 		}
-		if (u.Hostname() == sys.Host.IPAddresses[0] || u.Hostname() == "localhost") && uPort == sys.Husk.ProtoPort[u.Scheme] {
+		if (u.Hostname() == sys.Husk.Host.IPAddresses[0] || u.Hostname() == "localhost") && uPort == sys.Husk.ProtoPort[u.Scheme] {
 			continue
 		}
 		peers = append(peers, cs)

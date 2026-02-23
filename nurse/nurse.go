@@ -32,18 +32,19 @@ import (
 func main() {
 	// prepare for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background()) // create a context that can be cancelled
-	defer cancel()
+	defer cancel()                                          // make sure all paths cancel the context to avoid context leak
 
 	// instantiate the System
-	sys := components.NewSystem("telegrapher", ctx)
+	sys := components.NewSystem("nurse", ctx)
+	sys.Mission = "monitor_anomalies"
 
-	// instantiate the husk
+	// Instantiate the husk
 	sys.Husk = &components.Husk{
-		Description: " subscribes and publishes to an MQTT broker",
+		Description: " is a system that monitors an asset's measurements and reports to a SAP system in case of anomalies.",
 		Details:     map[string][]string{"Developer": {"Synecdoque"}},
 		Host:        components.NewDevice(),
-		ProtoPort:   map[string]int{"https": 0, "http": 20172, "coap": 0},
-		InfoLink:    "https://github.com/sdoque/systems/tree/main/telegrapher",
+		ProtoPort:   map[string]int{"https": 0, "http": 20181, "coap": 0},
+		InfoLink:    "https://github.com/sdoque/systems/tree/main/influxer",
 		DName: pkix.Name{
 			CommonName:         sys.Name,
 			Organization:       []string{"Synecdoque"},
@@ -90,49 +91,24 @@ func main() {
 	<-sys.Sigs // wait for a SIGINT (Ctrl+C) signal
 	fmt.Println("\nshuting down system", sys.Name)
 	cancel()                    // cancel the context, signaling the goroutines to stop
-	time.Sleep(3 * time.Second) // allow the go routines to be executed, which might take more time than the main routine to end
+	time.Sleep(2 * time.Second) // allow the go routines to be executed, which might take more time than the main routine to end
 }
 
-// Serving handles the resources services. NOTE: it exepcts those names from the request URL path
+// Serving handles the resources services. NOTE: it expects those names from the request URL path
 func (ua *UnitAsset) Serving(w http.ResponseWriter, r *http.Request, servicePath string) {
-	svrs := ua.GetServices()
-	if svrs[servicePath] != nil {
-		ua.access(w, r, servicePath)
-	} else {
+	switch servicePath {
+	case "monitor":
+		ua.statusCheck(w, r)
+
+	default:
 		http.Error(w, "Invalid service request [Do not modify the services subpath in the configuration file]", http.StatusBadRequest)
 	}
 }
 
-func (ua *UnitAsset) access(w http.ResponseWriter, r *http.Request, servicePath string) {
+func (ua *UnitAsset) statusCheck(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		msg := ua.Message
-		if len(msg) > 0 {
-			w.WriteHeader(http.StatusOK)
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(msg)
-		} else {
-			http.Error(w, "The subscribed topic is not being published", http.StatusBadRequest)
-		}
-	case "PUT":
-		// data, err := io.ReadAll(r.Body)
-		// if err != nil {
-		// 	http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		// 	return
-		// }
-		// defer r.Body.Close()
-
-		// if err := ua.publishRaw(data); err != nil {
-		log.Printf("MQTT client is connected: %v", ua.mClient.IsConnected())
-
-		if err := ua.publishRaw([]byte(`{"test":123}`)); err != nil {
-			log.Printf("Failed to publish: %v", err)
-			http.Error(w, "MQTT publish failed", http.StatusInternalServerError)
-			return
-		}
-		log.Printf("MQTT client is connected: %v", ua.mClient.IsConnected())
-
-		w.WriteHeader(http.StatusAccepted)
+		ua.state(w)
 	default:
 		http.Error(w, "Method is not supported.", http.StatusNotFound)
 	}

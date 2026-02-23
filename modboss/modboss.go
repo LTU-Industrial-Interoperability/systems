@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,7 +32,7 @@ import (
 	"github.com/sdoque/mbaigo/usecases"
 )
 
-// This is the main function for the Modbus master (Modboss) system
+// This is the main function for the Modbus master (modboss) system
 func main() {
 	// prepare for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background()) // create a context that can be cancelled
@@ -40,12 +41,22 @@ func main() {
 	// instantiate the System
 	sys := components.NewSystem("modboss", ctx)
 
-	// instatiate the husk
+	// instantiate the husk
 	sys.Husk = &components.Husk{
 		Description: "interacts with an Modbus slave or server",
-		Details:     map[string][]string{"Developer": {"Arrowhead"}},
+		Details:     map[string][]string{"Developer": {"Synecdoque"}},
 		ProtoPort:   map[string]int{"https": 0, "http": 20171, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/systems/tree/main/modboss",
+		DName: pkix.Name{
+			CommonName:         sys.Name,
+			Organization:       []string{"Synecdoque"},
+			OrganizationalUnit: []string{"Systems"},
+			Locality:           []string{"Luleå"},
+			Province:           []string{"Norrbotten"},
+			Country:            []string{"SE"},
+		},
+		RegistrarChan: make(chan *components.CoreSystem, 1),
+		Messengers:    make(map[string]int),
 	}
 
 	// instantiate a template unit asset
@@ -64,10 +75,11 @@ func main() {
 		if err := json.Unmarshal(raw, &uac); err != nil {
 			log.Fatalf("Resource configuration error: %+v\n", err)
 		}
-		promUA, cleanup := newResource(uac, &sys)
+		uas, cleanup := newResource(uac, &sys)
 		defer cleanup()
-		for _, nua := range promUA {
-			sys.UAssets[nua.GetName()] = &nua
+		for _, ua := range uas {
+			var asset components.UnitAsset = ua
+			sys.UAssets[ua.GetName()] = &asset
 		}
 	}
 

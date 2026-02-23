@@ -26,24 +26,25 @@ import (
 	"time"
 
 	"github.com/sdoque/mbaigo/components"
+	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
 )
 
 func main() {
 	// prepare for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background()) // create a context that can be cancelled
-	defer cancel()
+	defer cancel()                                          // make sure all paths cancel the context to avoid context leak
 
 	// instantiate the System
-	sys := components.NewSystem("telegrapher", ctx)
+	sys := components.NewSystem("emulator", ctx)
 
 	// instantiate the husk
 	sys.Husk = &components.Husk{
-		Description: " subscribes and publishes to an MQTT broker",
+		Description: "replays signals stored in JSON, XML or CSV files",
 		Details:     map[string][]string{"Developer": {"Synecdoque"}},
 		Host:        components.NewDevice(),
-		ProtoPort:   map[string]int{"https": 0, "http": 20172, "coap": 0},
-		InfoLink:    "https://github.com/sdoque/systems/tree/main/telegrapher",
+		ProtoPort:   map[string]int{"https": 0, "http": 20156, "coap": 0},
+		InfoLink:    "https://github.com/sdoque/systems/tree/main/ds18b20",
 		DName: pkix.Name{
 			CommonName:         sys.Name,
 			Organization:       []string{"Synecdoque"},
@@ -64,16 +65,18 @@ func main() {
 	// Configure the system
 	rawResources, err := usecases.Configure(&sys)
 	if err != nil {
-		log.Fatalf("Configuration error: %v\n", err)
+		log.Fatalf("configuration error: %v\n", err)
 	}
 	sys.UAssets = make(map[string]*components.UnitAsset) // clear the unit asset map (from the template)
+	var cleanups []func()
 	for _, raw := range rawResources {
 		var uac usecases.ConfigurableAsset
 		if err := json.Unmarshal(raw, &uac); err != nil {
-			log.Fatalf("Resource configuration error: %+v\n", err)
+			log.Fatalf("resource configuration error: %+v\n", err)
 		}
 		ua, cleanup := newResource(uac, &sys)
-		defer cleanup()
+		cleanups = append(cleanups, cleanup)
+		defer cleanup() // ensure cleanup is called when the program exits
 		sys.UAssets[ua.GetName()] = &ua
 	}
 
@@ -83,56 +86,73 @@ func main() {
 	// Register the (system) and its services
 	usecases.RegisterServices(&sys)
 
-	// start the http handler and server
+	// start the requests handlers and servers
 	go usecases.SetoutServers(&sys)
 
 	// wait for shutdown signal, and gracefully close properly goroutines with context
 	<-sys.Sigs // wait for a SIGINT (Ctrl+C) signal
-	fmt.Println("\nshuting down system", sys.Name)
+	log.Println("\nshuting down system", sys.Name)
 	cancel()                    // cancel the context, signaling the goroutines to stop
-	time.Sleep(3 * time.Second) // allow the go routines to be executed, which might take more time than the main routine to end
+	time.Sleep(2 * time.Second) // allow the go routines to be executed, which might take more time than the main routine to end
 }
 
-// Serving handles the resources services. NOTE: it exepcts those names from the request URL path
+// Serving handles the resources services. NOTE: it expects those names from the request URL path
 func (ua *UnitAsset) Serving(w http.ResponseWriter, r *http.Request, servicePath string) {
-	svrs := ua.GetServices()
-	if svrs[servicePath] != nil {
-		ua.access(w, r, servicePath)
-	} else {
+	switch servicePath {
+	case "access":
+		ua.readSignal(w, r)
+	default:
 		http.Error(w, "Invalid service request [Do not modify the services subpath in the configuration file]", http.StatusBadRequest)
 	}
 }
 
-func (ua *UnitAsset) access(w http.ResponseWriter, r *http.Request, servicePath string) {
+// readSignal gets the unit asset's signal datum and sends it in a signal form
+func (ua *UnitAsset) readSignal(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
-	case "GET":
-		msg := ua.Message
-		if len(msg) > 0 {
-			w.WriteHeader(http.StatusOK)
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(msg)
-		} else {
-			http.Error(w, "The subscribed topic is not being published", http.StatusBadRequest)
+	case http.MethodGet:
+		getMeasuremet := STray{
+			Action: "read",
+			// Buffer 1 prevents emulateAsset from blocking forever if the handler exits early.
+			ValueP: make(chan forms.SignalA_v1a, 1),
+			Error:  make(chan error, 1),
 		}
-	case "PUT":
-		// data, err := io.ReadAll(r.Body)
-		// if err != nil {
-		// 	http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		// 	return
-		// }
-		// defer r.Body.Close()
 
-		// if err := ua.publishRaw(data); err != nil {
-		log.Printf("MQTT client is connected: %v", ua.mClient.IsConnected())
-
-		if err := ua.publishRaw([]byte(`{"test":123}`)); err != nil {
-			log.Printf("Failed to publish: %v", err)
-			http.Error(w, "MQTT publish failed", http.StatusInternalServerError)
+		// IMPORTANT: Protect the send. Your previous code could block forever here.
+		select {
+		case ua.trayChan <- getMeasuremet:
+			// delivered
+		case <-r.Context().Done():
+			http.Error(w, "Request cancelled", http.StatusRequestTimeout)
+			log.Println("Signal reading request cancelled by client")
+			return
+		case <-time.After(1 * time.Second):
+			http.Error(w, "Asset busy", http.StatusGatewayTimeout)
+			log.Println("Failure to enqueue signal reading request (asset busy)")
 			return
 		}
-		log.Printf("MQTT client is connected: %v", ua.mClient.IsConnected())
 
-		w.WriteHeader(http.StatusAccepted)
+		// Now wait for the response (or timeout/cancel)
+		select {
+		case err := <-getMeasuremet.Error:
+			fmt.Printf("Logic error in getting measurement, %s\n", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+
+		case signalForm := <-getMeasuremet.ValueP:
+			usecases.HTTPProcessGetRequest(w, r, &signalForm)
+			return
+
+		case <-r.Context().Done():
+			http.Error(w, "Request cancelled", http.StatusRequestTimeout)
+			log.Println("Signal reading request cancelled while waiting for response")
+			return
+
+		case <-time.After(5 * time.Second):
+			http.Error(w, "Request timed out", http.StatusGatewayTimeout)
+			log.Println("Failure to process signal reading request (timed out waiting for response)")
+			return
+		}
+
 	default:
 		http.Error(w, "Method is not supported.", http.StatusNotFound)
 	}

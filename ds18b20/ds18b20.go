@@ -42,6 +42,7 @@ func main() {
 	sys.Husk = &components.Husk{
 		Description: "reads the temperature from 1-wire sensors",
 		Details:     map[string][]string{"Developer": {"Synecdoque"}},
+		Host:        components.NewDevice(),
 		ProtoPort:   map[string]int{"https": 0, "http": 20150, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/systems/tree/main/ds18b20",
 		DName: pkix.Name{
@@ -52,6 +53,8 @@ func main() {
 			Province:           []string{"Norrbotten"},
 			Country:            []string{"SE"},
 		},
+		RegistrarChan: make(chan *components.CoreSystem, 1),
+		Messengers:    make(map[string]int),
 	}
 
 	// instantiate a template unit asset

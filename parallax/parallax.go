@@ -1,10 +1,13 @@
 /*******************************************************************************
- * Copyright (c) 2024 Jan van Deventer
+ * Copyright (c) 2024 Synecdoque
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v2.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-2.0/
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, subject to the following conditions:
+ *
+ * The software is licensed under the MIT License. See the LICENSE file in this repository for details.
  *
  * Contributors:
  *   Jan A. van Deventer, Luleå - initial implementation
@@ -37,7 +40,8 @@ func main() {
 	// instantiate the husk
 	sys.Husk = &components.Husk{
 		Description: " provides a rotation service using a standard servo motor driven with PWM",
-		Details:     map[string][]string{"Developer": {"Arrowhead"}},
+		Details:     map[string][]string{"Developer": {"Synecdoque"}},
+		Host:        components.NewDevice(),
 		ProtoPort:   map[string]int{"https": 0, "http": 20151, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/systems/tree/main/parallax",
 		DName: pkix.Name{
@@ -48,6 +52,8 @@ func main() {
 			Province:           []string{"Norrbotten"},
 			Country:            []string{"SE"},
 		},
+		RegistrarChan: make(chan *components.CoreSystem, 1),
+		Messengers:    make(map[string]int),
 	}
 
 	// instantiate a template unit asset
