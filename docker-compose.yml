@@ -1,0 +1,78 @@
+version: '3.8'
+
+# mbaigo Systems Docker Compose Configuration
+# 
+# Required versions:
+# - Docker: Latest
+# - Docker Compose: V2.0+
+# - Go: 1.25.6+
+# - Python: 3.11+
+# - pymodbus: 3.5.0
+#
+# See SETUP.md for detailed setup instructions
+
+services:
+  # MQTT Broker
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./docker/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-logs:/mosquitto/log
+    networks:
+      - mbaigo-network
+
+  # Modbus TCP Simulator
+  modbus-sim:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.modbus
+    container_name: modbus-sim
+    ports:
+      - "5020:5020"
+    networks:
+      - mbaigo-network
+    depends_on:
+      - mosquitto
+
+  # OPC UA Simulator
+  # Run separately Prosys OPC UA Simulation Server on host machine
+
+  # All mbaigo services (ESR, Orchestrator, Modboss, Telegrapher, UAClient)
+  services:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: mbaigo-services
+    ports:
+      - "20100:20100"  # CA (if used)
+      - "20101:20101"  # maitreD (if used)
+      - "20102:20102"  # ESR
+      - "20103:20103"  # Orchestrator
+      - "20170:20170"  # UAClient
+      - "20171:20171"  # Modboss
+      - "20172:20172"  # Telegrapher
+    networks:
+      - mbaigo-network
+    depends_on:
+      - mosquitto
+      - modbus-sim
+      # - opcua-sim  # Commented out until OPC UA server is available
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Allows accessing host machine (for Prosys)
+    environment:
+      - MOSQUITTO_HOST=mosquitto
+      - MODBUS_HOST=modbus-sim
+      - OPCUA_HOST=opcua-sim
+
+networks:
+  mbaigo-network:
+    driver: bridge
+
+volumes:
+  mosquitto-data:
+  mosquitto-logs:

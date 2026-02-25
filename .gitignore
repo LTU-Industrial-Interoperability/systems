@@ -8,6 +8,7 @@
 *_imac
 *_amac
 *_ilin
+*.sh
 Makefile
 
 # Test binary, built with `go test -c`
@@ -32,3 +33,9 @@ serviceRegistry.db
 *.log
 *.err
 *-bin
+!demo/*.sh
+!demo/configs/*.json
+
+# docker
+!docker/*.sh
+!docker/configs/*.json

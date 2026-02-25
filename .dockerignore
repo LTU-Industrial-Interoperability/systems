@@ -1,0 +1,56 @@
+# Build files and dependencies
+.git
+.gitignore
+node_modules
+*.o
+*.a
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Unnecessary services (if not needed)
+collector/
+ds18b20/
+emulator/
+filmer/
+kgrapher/
+leveler/
+messenger/
+nurse/
+parallax/
+parallax4/
+photographer/
+recognizer/
+revolutionary/
+thermostat/
+
+# demo
+demo/
+
+# Documentation
+*.md
+LICENSE
+
+# Test files
+*_test.go
+test_*.py
+
+# Config files (not needed in container)
+*.json
+!docker/configs/**/*.json
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+
+
+# Misc
+*.log
+.env
