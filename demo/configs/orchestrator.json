@@ -1,0 +1,55 @@
+{
+    "systemname": "orchestrator",
+    "unit_assets": [
+        {
+            "name": "orchestration",
+            "details": {
+                "Platform": [
+                    "Independent"
+                ]
+            },
+            "services": [
+                {
+                    "definition": "squest",
+                    "subpath": "squest",
+                    "details": {
+                        "DefaultForm": [
+                            "ServiceRecord_v1"
+                        ],
+                        "Location": [
+                            "LocalCloud"
+                        ]
+                    },
+                    "registrationPeriod": 0,
+                    "costUnit": ""
+                }
+            ],
+            "traits": [
+                {}
+            ]
+        }
+    ],
+    "protocolsNports": {
+        "coap": 0,
+        "http": 20103,
+        "https": 0
+    },
+    "coreSystems": [
+        {
+            "coreSystem": "serviceregistrar",
+            "url": "http://localhost:20102/serviceregistrar/registry"
+        },
+        {
+            "coreSystem": "orchestrator",
+            "url": "http://localhost:20103/orchestrator/orchestration"
+        },
+        {
+            "coreSystem": "ca",
+            "url": "http://localhost:20100/ca/certification"
+        },
+        {
+            "coreSystem": "maitreD",
+            "url": "http://localhost:20101/maitreD/maitreD"
+        }
+    ]
+}

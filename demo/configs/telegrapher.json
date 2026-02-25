@@ -1,0 +1,58 @@
+{
+    "systemname": "telegrapher",
+    "unit_assets": [
+        {
+            "name": "counter/access",
+            "details": {
+                "mqtt": [
+                    "prosys"
+                ]
+            },
+            "services": [],
+            "traits": [{
+                "broker": "tcp://localhost:1883",
+                "pattern": ["node"],
+                "period": 5
+            }]
+        },
+        {
+        "name": "counter/access", 
+        "services": [
+            {
+                "definition": "access",
+                "subpath": "access",
+                "registrationPeriod": 30,
+                "costUnit": ""
+            }
+        ],
+        "traits": [{
+            "broker": "tcp://localhost:1883",
+            "pattern": ["mqtt"],
+            "period": -1
+        }]
+    }
+    ],
+    "protocolsNports": {
+        "coap": 0,
+        "http": 20172,
+        "https": 0
+    },
+    "coreSystems": [
+        {
+            "coreSystem": "serviceregistrar",
+            "url": "http://localhost:20102/serviceregistrar/registry"
+        },
+        {
+            "coreSystem": "orchestrator",
+            "url": "http://localhost:20103/orchestrator/orchestration"
+        },
+        {
+            "coreSystem": "ca",
+            "url": "http://localhost:20100/ca/certification"
+        },
+        {
+            "coreSystem": "maitreD",
+            "url": "http://localhost:20101/maitreD/maitreD"
+        }
+    ]
+}
