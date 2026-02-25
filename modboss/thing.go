@@ -37,6 +37,8 @@ import (
 type Traits struct {
 	ServerAddress string              `json:"serverAddress"`
 	RegisterMap   map[string][]string `json:"register_map"`
+	Period 	  	  int                 `json:"period"`
+	Details 	  map[string][]string `json:"details"`
 	conn          *net.Conn           `json:"-"`
 	IOtype        ioType              `json:"-"`
 	Address       string              `json:"-"`
@@ -161,7 +163,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 		log.Fatalf("Connection error (or timed out after 5 seconds): %v", err)
 	}
 	fmt.Println("Connected")
-	// service := configuredAsset.Services[0]
+	service := configuredAsset.Services[0]
 
 	var slaveIO []*UnitAsset
 	for kind, gio := range ua.RegisterMap {
@@ -179,66 +181,64 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 			newUA.Access = parts[2]
 			newUA.DataType = parts[3]
 			newUA.Owner = sys
-			// newUA.Details = configuredAsset.Details
-			// newUA.ServicesMap = usecases.MakeServiceMap(configuredAsset.Services)
-			// newUA.Owner = sys
+			newUA.Details = configuredAsset.Details
+			newUA.ServicesMap = usecases.MakeServiceMap(configuredAsset.Services)
+			newUA.Owner = sys
 			
-			// // Set up cervices if configured
-			// if modbusConfig.Period >= 0 {
-			// 	newUA.CervicesMap = make(components.Cervices)
-			// 	newCervice := &components.Cervice{
-			// 		Definition: service.Definition,
-			// 		Protos:     components.SProtocols(sys.Husk.ProtoPort),
-			// 		Nodes:      make(map[string][]string),
-			// 		Details:    modbusConfig.Details,
-			// 	}
-			// 	newUA.CervicesMap[service.Definition] = newCervice
-			// }
-			// slaveIO = append(slaveIO, newUA)
-			newUA.Details = ua.Details
-			slaveIO = append(slaveIO, newUA) // Use the pointer to newUA
+			// Set up cervices if configured
+			if ua.Traits.Period >= 0 {
+				newUA.CervicesMap = make(components.Cervices)
+				newCervice := &components.Cervice{
+					Definition: service.Definition,
+					Protos:     components.SProtocols(sys.Husk.ProtoPort),
+					Nodes:      make(map[string][]string),
+					Details:    ua.Traits.Details,
+				}
+				newUA.CervicesMap[service.Definition] = newCervice
+			}
+			slaveIO = append(slaveIO, newUA)
 		}
 	}
 
-	// Start periodic consumption if Period > 0
-	// if modbusConfig.Period > 0 && len(slaveIO) > 0 {
-	// 	go func() {
-	// 		ticker := time.NewTicker(time.Duration(modbusConfig.Period) * time.Second)
-	// 		defer ticker.Stop()
+	//Start periodic consumption if Period > 0
+	if ua.Traits.Period > 0 && len(slaveIO) > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Duration(ua.Traits.Period) * time.Second)
+			defer ticker.Stop()
 			
-	// 		for {
-	// 			select {
-	// 			case <-ticker.C:
-	// 				ua := slaveIO[0].(*UnitAsset)
+			for {
+				select {
+				case <-ticker.C:
+					ua := slaveIO[0]
 				
-	// 				payload, err := usecases.GetState(ua.CervicesMap[service.Definition], ua.Owner)
-	// 				if err != nil {
-	// 					log.Printf("Unable to obtain reading: %s\n", err)
-	// 					continue
-	// 				}
+					payload, err := usecases.GetState(ua.CervicesMap[service.Definition], ua.Owner)
+					if err != nil {
+						log.Printf("Unable to obtain reading: %s\n", err)
+						continue
+					}
 					
-	// 				// Unpack signal
-	// 				signal, ok := payload.(*forms.SignalA_v1a)
-	// 				if !ok {
-	// 					log.Println("Problem unpacking signal")
-	// 					continue
-	// 				}
+					// Unpack signal
+					signal, ok := payload.(*forms.SignalA_v1a)
+					if !ok {
+						log.Println("Problem unpacking signal")
+						continue
+					}
 					
-	// 				// Write to Modbus
-	// 				log.Printf("Received %.0f from telegrapher, writing to register %s\n", signal.Value, ua.Address)
-	// 				if err := ua.write(int(signal.Value)); err != nil {
-	// 					log.Printf("Failed to write: %v", err)
-	// 				} else {
-	// 					log.Printf("✓ Wrote %.0f to register %s", signal.Value, ua.Address)
-	// 				}
+					// Write to Modbus
+					log.Printf("Received %.0f from telegrapher, writing to register %s\n", signal.Value, ua.Address)
+					if err := ua.write(int(signal.Value)); err != nil {
+						log.Printf("Failed to write: %v", err)
+					} else {
+						log.Printf("✓ Wrote %.0f to register %s", signal.Value, ua.Address)
+					}
 					
-	// 			case <-sys.Ctx.Done():
-	// 				log.Println("Stopping periodic consumption")
-	// 				return
-	// 			}
-	// 		}
-	// 	}()
-	// }
+				case <-sys.Ctx.Done():
+					log.Println("Stopping periodic consumption")
+					return
+				}
+			}
+		}()
+	}
 
 	// Return the unit asset(s) and a cleanup function to close any connection
 	return slaveIO, func() {
