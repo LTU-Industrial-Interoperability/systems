@@ -4,7 +4,7 @@ go 1.25.4
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.0
-	github.com/sdoque/mbaigo v0.0.0-20250520155324-7390c339652a
+	github.com/sdoque/mbaigo v0.1.0-alpha.1.0.20251208114144-6cc6f78035ae
 )
 
 require (

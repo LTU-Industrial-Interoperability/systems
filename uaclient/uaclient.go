@@ -41,6 +41,7 @@ func main() {
 	// Instantiate the husk
 	sys.Husk = &components.Husk{
 		Description: "interacts with an OPC UA server",
+		Host: components.NewDevice(),
 		Details:     map[string][]string{"Developer": {"Synecdoque"}},
 		ProtoPort:   map[string]int{"https": 0, "http": 20170, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/mbaigo/tree/master/uaclient",
