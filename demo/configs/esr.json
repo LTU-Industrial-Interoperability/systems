@@ -1,0 +1,87 @@
+{
+    "systemname": "serviceregistrar",
+    "localcloud": "AlphaCloud",
+    "unit_assets": [
+        {
+            "name": "registry",
+            "details": {
+                "Type": [
+                    "ephemeral"
+                ]
+            },
+            "services": [
+                {
+                    "definition": "unregister",
+                    "subpath": "unregister",
+                    "details": {
+                        "Forms": [
+                            "ID_only"
+                        ]
+                    },
+                    "registrationPeriod": 0,
+                    "costUnit": ""
+                },
+                {
+                    "definition": "status",
+                    "subpath": "status",
+                    "details": {
+                        "Forms": [
+                            "none"
+                        ]
+                    },
+                    "registrationPeriod": 0,
+                    "costUnit": ""
+                },
+                {
+                    "definition": "register",
+                    "subpath": "register",
+                    "details": {
+                        "Forms": [
+                            "ServiceRecord_v1"
+                        ]
+                    },
+                    "registrationPeriod": 0,
+                    "costUnit": ""
+                },
+                {
+                    "definition": "query",
+                    "subpath": "query",
+                    "details": {
+                        "Forms": [
+                            "ServiceQuest_v1",
+                            "ServicePoint_v1"
+                        ]
+                    },
+                    "registrationPeriod": 0,
+                    "costUnit": ""
+                }
+            ],
+            "traits": [
+                {}
+            ]
+        }
+    ],
+    "protocolsNports": {
+        "coap": 0,
+        "http": 20102,
+        "https": 0
+    },
+    "coreSystems": [
+        {
+            "coreSystem": "serviceregistrar",
+            "url": "http://localhost:20102/serviceregistrar/registry"
+        },
+        {
+            "coreSystem": "orchestrator",
+            "url": "http://localhost:20103/orchestrator/orchestration"
+        },
+        {
+            "coreSystem": "ca",
+            "url": "http://localhost:20100/ca/certification"
+        },
+        {
+            "coreSystem": "maitreD",
+            "url": "http://localhost:20101/maitreD/maitreD"
+        }
+    ]
+}
