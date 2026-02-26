@@ -72,6 +72,7 @@ echo -e "${GREEN}v pymodbus${NC}"
 echo ""
 echo -e "${BLUE}Building Go services...${NC}"
 mkdir -p "$DEMO_DIR/bin"
+mkdir -p "$DEMO_DIR/logs"
 
 BUILD_FAILED=0
 for svc in esr orchestrator modboss telegrapher uaclient; do
@@ -89,7 +90,6 @@ if [ $BUILD_FAILED -gt 0 ]; then
 fi
 
 # ── Prepare ───────────────────────────────────────────────────────────────────
-mkdir -p "$DEMO_DIR/logs"
 rm -f "$PIDS_FILE"
 save_pid $$  # save this script's PID so stop_demo.sh can signal it
 
