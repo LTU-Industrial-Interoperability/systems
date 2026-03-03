@@ -24,9 +24,18 @@ vendor/
 
 # mbaigo
 *.json
-go.mod
-go.sum
+go.work
 serviceRegistry.db
 *.pem
 **/files/
 
+# demo
+*.log
+*.err
+*-bin
+!demo/*.sh
+!demo/configs/*.json
+
+# docker
+!docker/*.sh
+!docker/configs/*.json

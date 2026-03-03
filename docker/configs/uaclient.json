@@ -1,0 +1,90 @@
+{
+    "systemname": "opcuac",
+    "unit_assets": [
+        {
+            "name": "PLC with OPC UA server",
+            "details": {
+                "KKS": [
+                    "YLLCP001"
+                ],
+                "Location": [
+                    "Line_1"
+                ],
+                "PLC": [
+                    "Prosys_Simulation_Server"
+                ]
+            },
+            "services": [
+                {
+                    "definition": "browse",
+                    "subpath": "browse",
+                    "details": {
+                        "Protocol": [
+                            "opc.tcp"
+                        ]
+                    },
+                    "registrationPeriod": 61,
+                    "costUnit": ""
+                },
+                {
+                    "definition": "access",
+                    "subpath": "access",
+                    "details": {
+                        "node": [
+                            "counter"
+                        ]
+                    },
+                    "registrationPeriod": 30,
+                    "costUnit": ""
+                }
+            ],
+            "traits": [
+                {
+                    "serverAddress": "opc.tcp://host.docker.internal:53530/OPCUA/SimulationServer",
+                    "NodeList": {
+                        "Node_Id": [
+                            "ns=3;i=1001"
+                        ]
+                    },
+                    "Server": null,
+                    "NodeID": null,
+                    "NodeClass": 0,
+                    "NodeName": "",
+                    "BrowseName": "",
+                    "Description": "",
+                    "AccessLevel": 0,
+                    "Path": "",
+                    "DataType": "",
+                    "Writable": false,
+                    "Unit": "",
+                    "Scale": "",
+                    "Min": "",
+                    "Max": ""
+                }
+            ]
+        }
+    ],
+    "protocolsNports": {
+        "coap": 0,
+        "http": 20170,
+        "https": 0
+    },
+    "coreSystems": [
+        {
+            "coreSystem": "serviceregistrar",
+            "url": "http://localhost:20102/serviceregistrar/registry"
+        },
+        {
+            "coreSystem": "orchestrator",
+            "url": "http://localhost:20103/orchestrator/orchestration"
+        },
+        {
+            "coreSystem": "ca",
+            "url": "http://localhost:20100/ca/certification"
+        },
+        {
+            "coreSystem": "maitreD",
+            "url": "http://localhost:20101/maitreD/maitreD"
+        }
+    ]
+}

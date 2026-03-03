@@ -41,6 +41,7 @@ func main() {
 	// Instantiate the husk
 	sys.Husk = &components.Husk{
 		Description: "interacts with an OPC UA server",
+		Host: components.NewDevice(),
 		Details:     map[string][]string{"Developer": {"Synecdoque"}},
 		ProtoPort:   map[string]int{"https": 0, "http": 20170, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/mbaigo/tree/master/uaclient",
@@ -65,16 +66,16 @@ func main() {
 		log.Fatalf("configuration error: %v\n", err)
 	}
 	sys.UAssets = make(map[string]*components.UnitAsset) // clear the unit asset map (from the template)
-	var cleanups []func()
 	for _, raw := range rawResources {
 		var uac usecases.ConfigurableAsset
 		if err := json.Unmarshal(raw, &uac); err != nil {
 			log.Fatalf("resource configuration error: %+v\n", err)
 		}
 		ua, cleanup := newResource(uac, &sys)
-		cleanups = append(cleanups, cleanup)
-		// defer cleanup()
-		sys.UAssets[ua.GetName()] = &ua
+		defer cleanup()
+		for _, nua := range ua {
+			sys.UAssets[nua.GetName()] = &nua
+		}
 	}
 
 	// Generate PKI keys and CSR to obtain a authentication certificate from the CA

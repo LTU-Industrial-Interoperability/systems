@@ -1,10 +1,13 @@
 /*******************************************************************************
- * Copyright (c) 2024 Jan van Deventer
+ * Copyright (c) 2024 Synecdoque
  *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the Eclipse Public License v2.0
- * which accompanies this distribution, and is available at
- * http://www.eclipse.org/legal/epl-2.0/
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, subject to the following conditions:
+ *
+ * The software is licensed under the MIT License. See the LICENSE file in this repository for details.
  *
  * Contributors:
  *   Jan A. van Deventer, Luleå - initial implementation
@@ -95,7 +98,7 @@ func initTemplate() components.UnitAsset {
 	// var uat components.UnitAsset // this is an interface, which we then initialize
 	uat := &UnitAsset{
 		Name:    "Servo_1",
-		Details: map[string][]string{"Model": {"standard servo", "half_circle"}, "Location": {"Kitchen"}},
+		Details: map[string][]string{"Model": {"standardServo", "halfCircle"}, "Location": {"Kitchen"}},
 		ServicesMap: components.Services{
 			rotation.SubPath: &rotation, // Inline assignment of the rotation service
 		},

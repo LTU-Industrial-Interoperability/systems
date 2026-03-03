@@ -1,0 +1,68 @@
+{
+    "systemname": "modboss",
+    "unit_assets": [
+        {
+            "name": "PLC with Modbus slave",
+            "details": {
+                "Location": [
+                    "A2306"
+                ],
+                "PLC": [
+                    "Wago"
+                ]
+            },
+            "services": [
+                {
+                    "definition": "access",
+                    "subpath": "access",
+                    "details": {
+                        "Protocol": [
+                            "tcp"
+                        ]
+                    },
+                    "registrationPeriod": 30,
+                    "costUnit": ""
+                }
+            ],
+            "traits": [
+                {
+                    "serverAddress": "127.0.0.1:5020",
+                    "register_map": {
+                        "holdingRegister": [
+                            "00000,CounterValue,rw,16-bit INT"
+                        ]
+                    },
+                    "period": 5,
+                    "details": {
+                        "mqtt": [
+                            "counter"
+                        ]
+                    }
+                }
+            ]
+        }
+    ],
+    "protocolsNports": {
+        "coap": 0,
+        "http": 20171,
+        "https": 0
+    },
+    "coreSystems": [
+        {
+            "coreSystem": "serviceregistrar",
+            "url": "http://localhost:20102/serviceregistrar/registry"
+        },
+        {
+            "coreSystem": "orchestrator",
+            "url": "http://localhost:20103/orchestrator/orchestration"
+        },
+        {
+            "coreSystem": "ca",
+            "url": "http://localhost:20100/ca/certification"
+        },
+        {
+            "coreSystem": "maitreD",
+            "url": "http://localhost:20101/maitreD/maitreD"
+        }
+    ]
+}

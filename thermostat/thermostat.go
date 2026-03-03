@@ -36,12 +36,14 @@ func main() {
 
 	// instantiate the System
 	sys := components.NewSystem("thermostat", ctx)
+	sys.Mission = "Controlling_Servo"
 
 	// Instantiate the husk
 	sys.Husk = &components.Husk{
 		Description: " is a controller for a consumed servo motor position based on a consumed temperature",
 		Certificate: "ABCD",
 		Details:     map[string][]string{"Developer": {"Synecdoque"}},
+		Host:        components.NewDevice(),
 		ProtoPort:   map[string]int{"https": 0, "http": 20152, "coap": 0},
 		InfoLink:    "https://github.com/sdoque/systems/tree/main/thermostat",
 		DName: pkix.Name{
@@ -52,6 +54,8 @@ func main() {
 			Province:           []string{"Norrbotten"},
 			Country:            []string{"SE"},
 		},
+		RegistrarChan: make(chan *components.CoreSystem, 1),
+		Messengers:    make(map[string]int),
 	}
 
 	// instantiate a template unit asset
@@ -107,6 +111,7 @@ func (t *UnitAsset) Serving(w http.ResponseWriter, r *http.Request, servicePath 
 	}
 }
 
+// setpt handles the get and set requests for the thermostat set point
 func (rsc *UnitAsset) setpt(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -123,6 +128,7 @@ func (rsc *UnitAsset) setpt(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// diff handles the get requests for the thermostat error signal
 func (rsc *UnitAsset) diff(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
@@ -133,6 +139,8 @@ func (rsc *UnitAsset) diff(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// variations handles the get requests for the thermostat jitter signal
+// the time to make the temperature get request , process it, and set the new position
 func (rsc *UnitAsset) variations(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
