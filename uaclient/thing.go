@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,13 +34,24 @@ import (
 	"github.com/sdoque/mbaigo/components"
 	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
+	"github.com/sdoque/systems/certgen"
 )
 
 // -------------------------------------Define the unit asset
+type Security struct {
+	Mode     string `json:"mode"`
+	Policy   string `json:"policy"`
+	Certfile string `json:"certfile"`
+	Keyfile  string `json:"keyfile"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 // Traits are Asset-specific configurable parameters
 type Traits struct {
 	ServerAdrress string              `json:"serverAddress"`
 	NodeList      map[string][]string `json:"NodeList"`
+	Security	  Security            `json:"security"`
 	Server        *opcua.Client
 	NodeID        *ua.NodeID
 	NodeClass     ua.NodeClass
@@ -145,10 +157,17 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	endpoint := plcConfig.ServerAdrress
-	opcuaClient, err := opcua.NewClient(endpoint)
+
+	opts, err := buildClientOptions(ctx, endpoint, plcConfig.Security, sys.Husk.DName)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("security setup: %v", err)
 	}
+
+	opcuaClient, err := opcua.NewClient(endpoint, opts...)
+	if err != nil {
+		log.Fatalf("failed to create OPC UA client: %v", err)
+	}
+
 	fmt.Printf("Trying to connect to OPC UA server @ %s\n", endpoint)
 	if err := opcuaClient.Connect(ctx); err != nil {
 		log.Fatal(err)
@@ -205,6 +224,8 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 		}
 	}
 }
+
+
 
 // UnmarshalTraits unmarshals a slice of json.RawMessage into a slice of Traits.
 func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
@@ -487,4 +508,75 @@ func browse(ctx context.Context, n *opcua.Node, path string, level int) ([]NodeD
 		return nil, err
 	}
 	return nodes, nil
+}
+
+// Constructs the OPC UA connection options based on the
+func buildClientOptions(ctx context.Context, endpoint string, sec Security, name pkix.Name) ([]opcua.Option, error) {
+	// Empty config means "no security"
+	if sec.Mode == "" {
+		sec.Mode = "None"
+	}
+	if sec.Policy == "" {
+		sec.Policy = "None"
+	}
+
+	secMode := ua.MessageSecurityModeFromString(sec.Mode)
+
+	// Determine user authentication mode
+	authMode := ua.UserTokenTypeAnonymous
+	if sec.Username != "" {
+		authMode = ua.UserTokenTypeUserName
+	}
+
+	// Fetch server endpoints and select the best match
+	endpoints, err := opcua.GetEndpoints(ctx, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("GetEndpoints: %w", err)
+	}
+	ep, err := opcua.SelectEndpoint(endpoints, sec.Policy, secMode)
+	if err != nil {
+		return nil, fmt.Errorf("SelectEndpoint (policy=%s mode=%s): %w", sec.Policy, sec.Mode, err)
+	}
+	if err := validateEndpointConfig(endpoints, ep.SecurityPolicyURI, ep.SecurityMode, authMode); err != nil {
+		return nil, err
+	}
+
+	opts := []opcua.Option{
+		opcua.SecurityFromEndpoint(ep, authMode),
+	}
+
+	// Channel security: load or generate client certificate
+	if sec.Certfile != "" && sec.Keyfile != "" {
+		appURI := "urn:" + name.CommonName
+		cert, key, err := certgen.EnsureExists(sec.Certfile, sec.Keyfile, name, appURI)
+		if err != nil {
+			return nil, fmt.Errorf("certificate setup: %w", err)
+		}
+		opts = append(opts, opcua.Certificate(cert), opcua.PrivateKey(key))
+	}
+
+	// User authentication
+	switch authMode {
+	case ua.UserTokenTypeAnonymous:
+		opts = append(opts, opcua.AuthAnonymous())
+	case ua.UserTokenTypeUserName:
+		opts = append(opts, opcua.AuthUsername(sec.Username, sec.Password))
+	}
+
+	return opts, nil
+}
+
+func validateEndpointConfig(endpoints []*ua.EndpointDescription, secPolicy string, secMode ua.MessageSecurityMode, authMode ua.UserTokenType) error {
+	for _, e := range endpoints {
+		if e.SecurityMode == secMode && e.SecurityPolicyURI == secPolicy {
+			for _, t := range e.UserIdentityTokens {
+				if t.TokenType == authMode {
+					return nil
+				}
+			}
+		}
+	}
+
+	err := errors.Errorf("server does not support an endpoint with security : %s , %s, %s", secPolicy, secMode, authMode)
+	return err
 }
