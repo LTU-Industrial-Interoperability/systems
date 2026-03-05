@@ -17,9 +17,13 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -27,6 +31,7 @@ import (
 	"github.com/sdoque/mbaigo/components"
 	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
+	"github.com/sdoque/systems/certgen"
 )
 
 // Define your global variable
@@ -38,13 +43,24 @@ func init() {
 }
 
 // -------------------------------------Define the unit asset
+
+//   - Username + Password: credential-based auth (independent of TLS)
+//   - CAFile: path to the broker's CA certificate (PEM) — required for TLS to verify the broker
+//   - CertFile + KeyFile: client certificate for mutual TLS (mTLS); generated automatically if missing
+type Security struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	CAFile   string `json:"caFile"`   // CA cert to verify the broker's identity
+	CertFile string `json:"certFile"` // Client cert for mTLS (auto-generated if absent)
+	KeyFile  string `json:"keyFile"`  // Client private key for mTLS (auto-generated if absent)
+}
+
 // Traits are Asset-specific configurable parameters and variables
 type Traits struct {
 	Broker   string      `json:"broker"`
 	mClient  mqtt.Client `json:"-"`
 	Pattern  []string    `json:"pattern"`
-	Username string      `json:"username"`
-	Password string      `json:"password"`
+	Security Security   `json:"security"`
 	Topic    string      `json:"-"`      // Topic is the MQTT topic to which the unit asset subscribes or publishes
 	Period   int         `json:"period"` // Period is the time interval for periodic service consumption, e.g., 30 seconds
 	Message  []byte      `json:"-"`
@@ -103,10 +119,7 @@ func initTemplate() components.UnitAsset {
 	}
 
 	assetTraits := Traits{
-		Broker:   "tcp://localhost:1883",
-		Username: "user",
-		Password: "password",
-		// Topic:    "kitchen/temperature", // Default topics
+		Broker:  "tcp://localhost:1883",
 		Pattern: []string{"Room"}, // Default patterns e.g. "House", "Room" as in "MyHouse/Kitchen"
 		Period:  -1,               // a negative value indicates that the unit asset subscribe to the topic and does not publish periodically
 	}
@@ -198,11 +211,9 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	// Create MQTT client options
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(ua.Broker)
-	if ua.Username != "" { // Password can be empty string for some brokers
-		opts.SetUsername(ua.Username)
-		opts.SetPassword(ua.Password)
+	opts, err := buildMQTTOptions(ua.Broker, ua.Security, sys.Husk.DName)
+	if err != nil {
+		log.Fatalf("MQTT security setup: %v", err)
 	}
 	opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		log.Printf("Connection lost: %v", err)
@@ -275,6 +286,58 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 		log.Println("Disconnecting from MQTT broker")
 		ua.mClient.Disconnect(250)
 	}
+}
+
+// buildMQTTOptions constructs the paho ClientOptions for all security combinations:
+//   - empty Security{}             → plain TCP, no auth
+//   - Username (+ Password)        → credential auth, no TLS
+//   - CAFile                       → TLS with broker certificate verification
+//   - CAFile + CertFile + KeyFile  → mutual TLS (mTLS); client cert is auto-generated if files are absent
+//   - any of the above + Username  → TLS/mTLS with credential auth
+func buildMQTTOptions(broker string, sec Security, name pkix.Name) (*mqtt.ClientOptions, error) {
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(broker)
+
+	// Credential auth — independent of TLS
+	if sec.Username != "" {
+		opts.SetUsername(sec.Username)
+		opts.SetPassword(sec.Password)
+	}
+
+	// TLS — only needed when CAFile or client cert files are provided
+	if sec.CAFile == "" && sec.CertFile == "" {
+		return opts, nil
+	}
+
+	tlsCfg := &tls.Config{}
+
+	// Load the broker's CA certificate to verify its identity
+	if sec.CAFile != "" {
+		caPEM, err := os.ReadFile(sec.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA cert %s: %w", sec.CAFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("failed to parse CA cert from %s", sec.CAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	// Load or auto-generate a client certificate for mutual TLS
+	if sec.CertFile != "" && sec.KeyFile != "" {
+		appURI := "urn:" + name.CommonName
+		certDER, key, err := certgen.EnsureExists(sec.CertFile, sec.KeyFile, name, appURI)
+		if err != nil {
+			return nil, fmt.Errorf("client certificate setup: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{
+			{Certificate: [][]byte{certDER}, PrivateKey: key},
+		}
+	}
+
+	opts.SetTLSConfig(tlsCfg)
+	return opts, nil
 }
 
 // UnmarshalTraits unmarshals a slice of json.RawMessage into a slice of Traits.
