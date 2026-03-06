@@ -21,11 +21,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"time"
 
 	"github.com/sdoque/mbaigo/components"
+	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
 )
 
@@ -123,7 +126,34 @@ func (node *UnitAsset) access(w http.ResponseWriter, r *http.Request) {
 	case "GET":
 		vauleForm := node.read()
 		usecases.HTTPProcessGetRequest(w, r, &vauleForm)
+	case "POST", "PUT":
+		contentType := r.Header.Get("Content-Type")
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		f, err := usecases.Unpack(bodyBytes, mediaType)
+		if err != nil {
+			http.Error(w, "Failed to unpack body", http.StatusBadRequest)
+			return
+		}
+		if err := node.writeForm(f); err != nil {
+			log.Printf("OPC UA write failed for %s: %v", node.Name, err)
+			http.Error(w, "OPC UA write failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "Method is not supported.", http.StatusNotFound)
 	}
 }
+
+// Ensure forms import is used (GET path uses it indirectly via read())
+var _ forms.Form = (*forms.SignalA_v1a)(nil)

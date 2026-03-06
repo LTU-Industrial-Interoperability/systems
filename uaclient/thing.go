@@ -51,6 +51,8 @@ type Security struct {
 type Traits struct {
 	ServerAdrress string              `json:"serverAddress"`
 	NodeList      map[string][]string `json:"NodeList"`
+	Period        int                 `json:"period"`  // < 0: serve only; > 0: periodic write
+	Details       map[string][]string `json:"details"` // used to identify the consumed service
 	Security	  Security            `json:"security"`
 	Server        *opcua.Client
 	NodeID        *ua.NodeID
@@ -125,7 +127,7 @@ func initTemplate() components.UnitAsset {
 		SubPath:     "access",
 		Details:     map[string][]string{"Protocol": {"opc.tcp"}},
 		RegPeriod:   30,
-		Description: "accesses the OPC UA node to read (GET) the information or if possible to write (PUT)[but not yet], ",
+		Description: "accesses the OPC UA node to read (GET) the information or write (POST/PUT), ",
 	}
 
 	// var uat components.UnitAsset // this is an interface, which we then initialize
@@ -191,6 +193,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	nodelist = append(nodelist, uasset)
 
 	// Check if "Node_Id" key exists to avoid a potential panic
+	var configuredNodes []*UnitAsset
 	if nodeIds, ok := plcConfig.NodeList["Node_Id"]; ok {
 		for _, nodeId := range nodeIds {
 			newUA := &UnitAsset{} // Create a pointer to UnitAsset
@@ -211,9 +214,64 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 
 			newUA.Owner = sys
 			nodelist = append(nodelist, newUA)
+			configuredNodes = append(configuredNodes, newUA)
 		}
 	} else {
 		fmt.Println("Node_Id key not found in map")
+	}
+
+	// Start periodic consumption if Period > 0: use explicitly configured nodes from NodeList.
+	// We do not filter by Writable here because some servers report AccessLevel=None even for
+	// nodes that accept writes; actual write errors will be logged at runtime.
+	if plcConfig.Period > 0 {
+		// Find the "access" service definition to use for consumption.
+		var accessDef string
+		for _, s := range configuredAsset.Services {
+			if s.Definition == "access" {
+				accessDef = s.Definition
+				break
+			}
+		}
+		if accessDef == "" {
+			log.Println("Warning: period > 0 but no 'access' service found — periodic goroutine not started")
+		} else if len(configuredNodes) == 0 {
+			log.Println("Warning: period > 0 but NodeList is empty — periodic goroutine not started")
+		} else {
+			for _, nua := range configuredNodes {
+				nua.CervicesMap = make(components.Cervices)
+				nua.CervicesMap[accessDef] = &components.Cervice{
+					Definition: accessDef,
+					Protos:     components.SProtocols(sys.Husk.ProtoPort),
+					Nodes:      make(map[string][]string),
+					Details:    plcConfig.Details,
+				}
+			}
+			fetcher := configuredNodes[0]
+			go func() {
+				ticker := time.NewTicker(time.Duration(plcConfig.Period) * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						payload, err := usecases.GetState(fetcher.CervicesMap[accessDef], fetcher.Owner)
+						if err != nil {
+							log.Printf("Unable to obtain reading: %s\n", err)
+							continue
+						}
+						for _, target := range configuredNodes {
+							if err := target.writeForm(payload); err != nil {
+								log.Printf("Failed to write to %s: %v", target.NodeID, err)
+							} else {
+								log.Printf("Wrote to OPC UA node %s", target.NodeID)
+							}
+						}
+					case <-sys.Ctx.Done():
+						log.Println("Stopping periodic OPC UA consumption")
+						return
+					}
+				}
+			}()
+		}
 	}
 
 	// Return the unit asset(s) and a cleanup function to close any connection
@@ -241,6 +299,47 @@ func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
 }
 
 // -------------------------------------Unit asset's function methods
+
+// writeForm extracts the value from a Form and writes it to the OPC UA node.
+// This is the shared path used by both on-demand POST requests and the periodic goroutine.
+func (node *UnitAsset) writeForm(f forms.Form) error {
+	switch s := f.(type) {
+	case *forms.SignalA_v1a:
+		return node.write(s.Value)
+	case *forms.SignalB_v1a:
+		return node.write(s.Value)
+	default:
+		return fmt.Errorf("unsupported form type %T", f)
+	}
+}
+
+// write writes a value to the OPC UA node.
+func (node *UnitAsset) write(value interface{}) error {
+	v, err := ua.NewVariant(value)
+	if err != nil {
+		return fmt.Errorf("invalid variant: %v", err)
+	}
+	req := &ua.WriteRequest{
+		NodesToWrite: []*ua.WriteValue{
+			{
+				NodeID:      node.NodeID,
+				AttributeID: ua.AttributeIDValue,
+				Value: &ua.DataValue{
+					EncodingMask: ua.DataValueValue,
+					Value:        v,
+				},
+			},
+		},
+	}
+	resp, err := node.Server.Write(node.Owner.Ctx, req)
+	if err != nil {
+		return fmt.Errorf("OPC UA write failed: %v", err)
+	}
+	if resp.Results[0] != ua.StatusOK {
+		return fmt.Errorf("OPC UA write status not OK: %v", resp.Results[0])
+	}
+	return nil
+}
 
 // browseNode list the node(s)
 func (node *UnitAsset) browseNode(w http.ResponseWriter) {
