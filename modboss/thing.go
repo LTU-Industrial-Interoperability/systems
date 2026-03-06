@@ -24,6 +24,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sdoque/mbaigo/components"
@@ -40,6 +41,7 @@ type Traits struct {
 	Period 	  	  int                 `json:"period"`
 	Details 	  map[string][]string `json:"details"`
 	conn          *net.Conn           `json:"-"`
+	mu            *sync.Mutex         `json:"-"` // shared across all registers on the same connection
 	IOtype        ioType              `json:"-"`
 	Address       string              `json:"-"`
 	Access        string              `json:"-"`
@@ -165,12 +167,16 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	fmt.Println("Connected")
 	service := configuredAsset.Services[0]
 
+	// One mutex shared by every register on this connection
+	connMu := &sync.Mutex{}
+
 	var slaveIO []*UnitAsset
 	for kind, gio := range ua.RegisterMap {
 		ioKind := typeOfIO(kind)
 		for _, str := range gio {
 			newUA := &UnitAsset{} // Create a pointer to UnitAsset
 			newUA.conn = &slave
+			newUA.mu = connMu
 			newUA.IOtype = ioKind
 			parts := strings.Split(str, ",")
 			if len(parts) < 4 {
@@ -333,6 +339,10 @@ func (ua *UnitAsset) read() (f forms.Form) {
 	binary.BigEndian.PutUint16(request[8:10], uint16(address))
 	binary.BigEndian.PutUint16(request[10:12], 1)
 
+	// Serialise the full request-response exchange: only one in-flight at a time.
+	ua.mu.Lock()
+	defer ua.mu.Unlock()
+
 	_, err = (*ua.conn).Write(request)
 	if err != nil {
 		log.Printf("Failed to send request: %v", err)
@@ -464,6 +474,10 @@ func (ua *UnitAsset) write(value interface{}) error {
 	}
 
 	binary.BigEndian.PutUint16(request[4:6], 6) // Length: always 6 bytes after header
+
+	// Serialise the full request-response exchange: only one in-flight at a time.
+	ua.mu.Lock()
+	defer ua.mu.Unlock()
 
 	_, err = (*ua.conn).Write(request)
 	if err != nil {
