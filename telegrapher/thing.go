@@ -25,6 +25,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -33,14 +34,6 @@ import (
 	"github.com/sdoque/mbaigo/usecases"
 	"github.com/sdoque/systems/certgen"
 )
-
-// Define your global variable
-var messageList map[string][]byte
-
-func init() {
-	// Initialize the map
-	messageList = make(map[string][]byte)
-}
 
 // -------------------------------------Define the unit asset
 
@@ -63,7 +56,8 @@ type Traits struct {
 	Security Security   `json:"security"`
 	Topic    string      `json:"-"`      // Topic is the MQTT topic to which the unit asset subscribes or publishes
 	Period   int         `json:"period"` // Period is the time interval for periodic service consumption, e.g., 30 seconds
-	Message  []byte      `json:"-"`
+	message  []byte      `json:"-"`      // last received payload; access via setMessage/getMessage
+	msgMu    sync.RWMutex `json:"-"`   // guards message
 }
 
 // UnitAsset type models the unit asset (interface) of the system
@@ -196,7 +190,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	// Make the topic a consumed service to be published (since we are consuming it)
-	if ua.Period >= 0 {
+	if ua.Period > 0 {
 		sProtocols := components.SProtocols(sys.Husk.ProtoPort)
 		newCervice := &components.Cervice{
 			Definition: service,
@@ -235,12 +229,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	if ua.Period < 0 {
 		messageHandler := func(client mqtt.Client, msg mqtt.Message) {
 			fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
-
-			// Ensure the map is initialized (just in case)
-			if messageList == nil {
-				messageList = make(map[string][]byte)
-			}
-			ua.Message = msg.Payload() // Assign message to topic in the map
+			ua.setMessage(msg.Payload())
 		}
 
 		// Subscribe to the topic
@@ -260,16 +249,9 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 					payload, err := usecases.GetState(ua.CervicesMap[service], ua.Owner)
 					if err != nil {
 						log.Printf("\nUnable to obtain a %s reading with error %s\n", service, err)
-						continue // return fmt.Errorf("unsupported measurement: %s", name)
+						continue
 					}
-					fmt.Printf("%+v\n", payload)
-					payload, ok := payload.(*forms.SignalA_v1a)
-					if !ok {
-						log.Println("Problem unpacking the signal form")
-						continue // return fmt.Errorf("problem unpacking measurement: %s", name)
-					}
-					message, err := usecases.Pack(payload, "application/json")
-					if err := ua.publishRaw(message); err != nil {
+					if err := ua.publishForm(payload); err != nil {
 						log.Printf("Periodic publish failed for topic %s: %v", ua.Topic, err)
 					} else {
 						log.Printf("Periodic message sent to topic %s", ua.Topic)
@@ -355,33 +337,30 @@ func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
 
 //-------------------------------------Unit asset's resource functions
 
-// publishToTopic publishes a payload to the MQTT topic of the unit asset.
-func (ua *UnitAsset) publishToTopic(payload map[string]interface{}, contentType string) error {
-	if ua.mClient == nil {
-		return fmt.Errorf("MQTT client not initialized")
-	}
+// setMessage safely stores the last received MQTT payload.
+func (ua *UnitAsset) setMessage(payload []byte) {
+	ua.msgMu.Lock()
+	defer ua.msgMu.Unlock()
+	cp := make([]byte, len(payload))
+	copy(cp, payload)
+	ua.message = cp
+}
 
-	// Serialize the message based on content type
-	var data []byte
-	var err error
-	switch contentType {
-	case "application/json":
-		data, err = json.Marshal(payload)
-	default:
-		// Fallback to JSON encoding for now
-		data, err = json.Marshal(payload)
-	}
+// getMessage safely retrieves the last received MQTT payload.
+func (ua *UnitAsset) getMessage() []byte {
+	ua.msgMu.RLock()
+	defer ua.msgMu.RUnlock()
+	return ua.message
+}
+
+// publishForm packs a Form to JSON and publishes it to the MQTT topic.
+// This is the shared write path used by both on-demand PUT requests and the periodic goroutine.
+func (ua *UnitAsset) publishForm(f forms.Form) error {
+	data, err := usecases.Pack(f, "application/json")
 	if err != nil {
-		return fmt.Errorf("failed to encode payload: %w", err)
+		return fmt.Errorf("failed to pack form: %w", err)
 	}
-	log.Println(contentType)
-
-	token := ua.mClient.Publish(ua.Topic, 0, false, data)
-	token.Wait()
-	if token.Error() != nil {
-		return fmt.Errorf("publish error: %w", token.Error())
-	}
-	return nil
+	return ua.publishRaw(data)
 }
 
 // publishRaw publishes raw data to the MQTT topic of the unit asset.
