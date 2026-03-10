@@ -17,37 +17,47 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/sdoque/mbaigo/components"
 	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
+	"github.com/sdoque/systems/certgen"
 )
 
-// Define your global variable
-var messageList map[string][]byte
+// -------------------------------------Define the unit asset
 
-func init() {
-	// Initialize the map
-	messageList = make(map[string][]byte)
+//   - Username + Password: credential-based auth (independent of TLS)
+//   - CAFile: path to the broker's CA certificate (PEM) — required for TLS to verify the broker
+//   - CertFile + KeyFile: client certificate for mutual TLS (mTLS); generated automatically if missing
+type Security struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	CAFile   string `json:"caFile"`   // CA cert to verify the broker's identity
+	CertFile string `json:"certFile"` // Client cert for mTLS (auto-generated if absent)
+	KeyFile  string `json:"keyFile"`  // Client private key for mTLS (auto-generated if absent)
 }
 
-// -------------------------------------Define the unit asset
 // Traits are Asset-specific configurable parameters and variables
 type Traits struct {
 	Broker   string      `json:"broker"`
 	mClient  mqtt.Client `json:"-"`
 	Pattern  []string    `json:"pattern"`
-	Username string      `json:"username"`
-	Password string      `json:"password"`
+	Security Security   `json:"security"`
 	Topic    string      `json:"-"`      // Topic is the MQTT topic to which the unit asset subscribes or publishes
 	Period   int         `json:"period"` // Period is the time interval for periodic service consumption, e.g., 30 seconds
-	Message  []byte      `json:"-"`
+	message  []byte      `json:"-"`      // last received payload; access via setMessage/getMessage
+	msgMu    sync.RWMutex `json:"-"`   // guards message
 }
 
 // UnitAsset type models the unit asset (interface) of the system
@@ -103,10 +113,7 @@ func initTemplate() components.UnitAsset {
 	}
 
 	assetTraits := Traits{
-		Broker:   "tcp://localhost:1883",
-		Username: "user",
-		Password: "password",
-		// Topic:    "kitchen/temperature", // Default topics
+		Broker:  "tcp://localhost:1883",
 		Pattern: []string{"Room"}, // Default patterns e.g. "House", "Room" as in "MyHouse/Kitchen"
 		Period:  -1,               // a negative value indicates that the unit asset subscribe to the topic and does not publish periodically
 	}
@@ -183,7 +190,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	// Make the topic a consumed service to be published (since we are consuming it)
-	if ua.Period >= 0 {
+	if ua.Period > 0 {
 		sProtocols := components.SProtocols(sys.Husk.ProtoPort)
 		newCervice := &components.Cervice{
 			Definition: service,
@@ -198,11 +205,9 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	// Create MQTT client options
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(ua.Broker)
-	if ua.Username != "" { // Password can be empty string for some brokers
-		opts.SetUsername(ua.Username)
-		opts.SetPassword(ua.Password)
+	opts, err := buildMQTTOptions(ua.Broker, ua.Security, sys.Husk.DName)
+	if err != nil {
+		log.Fatalf("MQTT security setup: %v", err)
 	}
 	opts.SetConnectionLostHandler(func(client mqtt.Client, err error) {
 		log.Printf("Connection lost: %v", err)
@@ -224,12 +229,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	if ua.Period < 0 {
 		messageHandler := func(client mqtt.Client, msg mqtt.Message) {
 			fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
-
-			// Ensure the map is initialized (just in case)
-			if messageList == nil {
-				messageList = make(map[string][]byte)
-			}
-			ua.Message = msg.Payload() // Assign message to topic in the map
+			ua.setMessage(msg.Payload())
 		}
 
 		// Subscribe to the topic
@@ -249,16 +249,9 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 					payload, err := usecases.GetState(ua.CervicesMap[service], ua.Owner)
 					if err != nil {
 						log.Printf("\nUnable to obtain a %s reading with error %s\n", service, err)
-						continue // return fmt.Errorf("unsupported measurement: %s", name)
+						continue
 					}
-					fmt.Printf("%+v\n", payload)
-					payload, ok := payload.(*forms.SignalA_v1a)
-					if !ok {
-						log.Println("Problem unpacking the signal form")
-						continue // return fmt.Errorf("problem unpacking measurement: %s", name)
-					}
-					message, err := usecases.Pack(payload, "application/json")
-					if err := ua.publishRaw(message); err != nil {
+					if err := ua.publishForm(payload); err != nil {
 						log.Printf("Periodic publish failed for topic %s: %v", ua.Topic, err)
 					} else {
 						log.Printf("Periodic message sent to topic %s", ua.Topic)
@@ -277,6 +270,58 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 }
 
+// buildMQTTOptions constructs the paho ClientOptions for all security combinations:
+//   - empty Security{}             → plain TCP, no auth
+//   - Username (+ Password)        → credential auth, no TLS
+//   - CAFile                       → TLS with broker certificate verification
+//   - CAFile + CertFile + KeyFile  → mutual TLS (mTLS); client cert is auto-generated if files are absent
+//   - any of the above + Username  → TLS/mTLS with credential auth
+func buildMQTTOptions(broker string, sec Security, name pkix.Name) (*mqtt.ClientOptions, error) {
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(broker)
+
+	// Credential auth — independent of TLS
+	if sec.Username != "" {
+		opts.SetUsername(sec.Username)
+		opts.SetPassword(sec.Password)
+	}
+
+	// TLS — only needed when CAFile or client cert files are provided
+	if sec.CAFile == "" && sec.CertFile == "" {
+		return opts, nil
+	}
+
+	tlsCfg := &tls.Config{}
+
+	// Load the broker's CA certificate to verify its identity
+	if sec.CAFile != "" {
+		caPEM, err := os.ReadFile(sec.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA cert %s: %w", sec.CAFile, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("failed to parse CA cert from %s", sec.CAFile)
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	// Load or auto-generate a client certificate for mutual TLS
+	if sec.CertFile != "" && sec.KeyFile != "" {
+		appURI := "urn:" + name.CommonName
+		certDER, key, err := certgen.EnsureExists(sec.CertFile, sec.KeyFile, name, appURI)
+		if err != nil {
+			return nil, fmt.Errorf("client certificate setup: %w", err)
+		}
+		tlsCfg.Certificates = []tls.Certificate{
+			{Certificate: [][]byte{certDER}, PrivateKey: key},
+		}
+	}
+
+	opts.SetTLSConfig(tlsCfg)
+	return opts, nil
+}
+
 // UnmarshalTraits unmarshals a slice of json.RawMessage into a slice of Traits.
 func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
 	var traitsList []Traits
@@ -292,33 +337,30 @@ func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
 
 //-------------------------------------Unit asset's resource functions
 
-// publishToTopic publishes a payload to the MQTT topic of the unit asset.
-func (ua *UnitAsset) publishToTopic(payload map[string]interface{}, contentType string) error {
-	if ua.mClient == nil {
-		return fmt.Errorf("MQTT client not initialized")
-	}
+// setMessage safely stores the last received MQTT payload.
+func (ua *UnitAsset) setMessage(payload []byte) {
+	ua.msgMu.Lock()
+	defer ua.msgMu.Unlock()
+	cp := make([]byte, len(payload))
+	copy(cp, payload)
+	ua.message = cp
+}
 
-	// Serialize the message based on content type
-	var data []byte
-	var err error
-	switch contentType {
-	case "application/json":
-		data, err = json.Marshal(payload)
-	default:
-		// Fallback to JSON encoding for now
-		data, err = json.Marshal(payload)
-	}
+// getMessage safely retrieves the last received MQTT payload.
+func (ua *UnitAsset) getMessage() []byte {
+	ua.msgMu.RLock()
+	defer ua.msgMu.RUnlock()
+	return ua.message
+}
+
+// publishForm packs a Form to JSON and publishes it to the MQTT topic.
+// This is the shared write path used by both on-demand PUT requests and the periodic goroutine.
+func (ua *UnitAsset) publishForm(f forms.Form) error {
+	data, err := usecases.Pack(f, "application/json")
 	if err != nil {
-		return fmt.Errorf("failed to encode payload: %w", err)
+		return fmt.Errorf("failed to pack form: %w", err)
 	}
-	log.Println(contentType)
-
-	token := ua.mClient.Publish(ua.Topic, 0, false, data)
-	token.Wait()
-	if token.Error() != nil {
-		return fmt.Errorf("publish error: %w", token.Error())
-	}
-	return nil
+	return ua.publishRaw(data)
 }
 
 // publishRaw publishes raw data to the MQTT topic of the unit asset.

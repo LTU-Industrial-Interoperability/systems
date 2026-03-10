@@ -21,7 +21,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"time"
 
@@ -106,32 +108,37 @@ func (ua *UnitAsset) Serving(w http.ResponseWriter, r *http.Request, servicePath
 func (ua *UnitAsset) access(w http.ResponseWriter, r *http.Request, servicePath string) {
 	switch r.Method {
 	case "GET":
-		msg := ua.Message
+		msg := ua.getMessage()
 		if len(msg) > 0 {
-			w.WriteHeader(http.StatusOK)
 			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
 			w.Write(msg)
 		} else {
 			http.Error(w, "The subscribed topic is not being published", http.StatusBadRequest)
 		}
-	case "PUT":
-		// data, err := io.ReadAll(r.Body)
-		// if err != nil {
-		// 	http.Error(w, "Failed to read request body", http.StatusBadRequest)
-		// 	return
-		// }
-		// defer r.Body.Close()
-
-		// if err := ua.publishRaw(data); err != nil {
-		log.Printf("MQTT client is connected: %v", ua.mClient.IsConnected())
-
-		if err := ua.publishRaw([]byte(`{"test":123}`)); err != nil {
+	case "PUT", "POST":
+		contentType := r.Header.Get("Content-Type")
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil {
+			http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read body", http.StatusBadRequest)
+			return
+		}
+		f, err := usecases.Unpack(bodyBytes, mediaType)
+		if err != nil {
+			http.Error(w, "Failed to unpack body", http.StatusBadRequest)
+			return
+		}
+		if err := ua.publishForm(f); err != nil {
 			log.Printf("Failed to publish: %v", err)
 			http.Error(w, "MQTT publish failed", http.StatusInternalServerError)
 			return
 		}
-		log.Printf("MQTT client is connected: %v", ua.mClient.IsConnected())
-
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "Method is not supported.", http.StatusNotFound)

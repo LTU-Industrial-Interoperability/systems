@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,13 +34,26 @@ import (
 	"github.com/sdoque/mbaigo/components"
 	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
+	"github.com/sdoque/systems/certgen"
 )
 
 // -------------------------------------Define the unit asset
+type Security struct {
+	Mode     string `json:"mode"`
+	Policy   string `json:"policy"`
+	Certfile string `json:"certfile"`
+	Keyfile  string `json:"keyfile"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 // Traits are Asset-specific configurable parameters
 type Traits struct {
 	ServerAdrress string              `json:"serverAddress"`
 	NodeList      map[string][]string `json:"NodeList"`
+	Period        int                 `json:"period"`  // < 0: serve only; > 0: periodic write
+	Details       map[string][]string `json:"details"` // used to identify the consumed service
+	Security	  Security            `json:"security"`
 	Server        *opcua.Client
 	NodeID        *ua.NodeID
 	NodeClass     ua.NodeClass
@@ -113,7 +127,7 @@ func initTemplate() components.UnitAsset {
 		SubPath:     "access",
 		Details:     map[string][]string{"Protocol": {"opc.tcp"}},
 		RegPeriod:   30,
-		Description: "accesses the OPC UA node to read (GET) the information or if possible to write (PUT)[but not yet], ",
+		Description: "accesses the OPC UA node to read (GET) the information or write (POST/PUT), ",
 	}
 
 	// var uat components.UnitAsset // this is an interface, which we then initialize
@@ -145,10 +159,17 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	}
 
 	endpoint := plcConfig.ServerAdrress
-	opcuaClient, err := opcua.NewClient(endpoint)
+
+	opts, err := buildClientOptions(ctx, endpoint, plcConfig.Security, sys.Husk.DName)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("security setup: %v", err)
 	}
+
+	opcuaClient, err := opcua.NewClient(endpoint, opts...)
+	if err != nil {
+		log.Fatalf("failed to create OPC UA client: %v", err)
+	}
+
 	fmt.Printf("Trying to connect to OPC UA server @ %s\n", endpoint)
 	if err := opcuaClient.Connect(ctx); err != nil {
 		log.Fatal(err)
@@ -172,6 +193,7 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	nodelist = append(nodelist, uasset)
 
 	// Check if "Node_Id" key exists to avoid a potential panic
+	var configuredNodes []*UnitAsset
 	if nodeIds, ok := plcConfig.NodeList["Node_Id"]; ok {
 		for _, nodeId := range nodeIds {
 			newUA := &UnitAsset{} // Create a pointer to UnitAsset
@@ -192,9 +214,64 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 
 			newUA.Owner = sys
 			nodelist = append(nodelist, newUA)
+			configuredNodes = append(configuredNodes, newUA)
 		}
 	} else {
 		fmt.Println("Node_Id key not found in map")
+	}
+
+	// Start periodic consumption if Period > 0: use explicitly configured nodes from NodeList.
+	// We do not filter by Writable here because some servers report AccessLevel=None even for
+	// nodes that accept writes; actual write errors will be logged at runtime.
+	if plcConfig.Period > 0 {
+		// Find the "access" service definition to use for consumption.
+		var accessDef string
+		for _, s := range configuredAsset.Services {
+			if s.Definition == "access" {
+				accessDef = s.Definition
+				break
+			}
+		}
+		if accessDef == "" {
+			log.Println("Warning: period > 0 but no 'access' service found — periodic goroutine not started")
+		} else if len(configuredNodes) == 0 {
+			log.Println("Warning: period > 0 but NodeList is empty — periodic goroutine not started")
+		} else {
+			for _, nua := range configuredNodes {
+				nua.CervicesMap = make(components.Cervices)
+				nua.CervicesMap[accessDef] = &components.Cervice{
+					Definition: accessDef,
+					Protos:     components.SProtocols(sys.Husk.ProtoPort),
+					Nodes:      make(map[string][]string),
+					Details:    plcConfig.Details,
+				}
+			}
+			fetcher := configuredNodes[0]
+			go func() {
+				ticker := time.NewTicker(time.Duration(plcConfig.Period) * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						payload, err := usecases.GetState(fetcher.CervicesMap[accessDef], fetcher.Owner)
+						if err != nil {
+							log.Printf("Unable to obtain reading: %s\n", err)
+							continue
+						}
+						for _, target := range configuredNodes {
+							if err := target.writeForm(payload); err != nil {
+								log.Printf("Failed to write to %s: %v", target.NodeID, err)
+							} else {
+								log.Printf("Wrote to OPC UA node %s", target.NodeID)
+							}
+						}
+					case <-sys.Ctx.Done():
+						log.Println("Stopping periodic OPC UA consumption")
+						return
+					}
+				}
+			}()
+		}
 	}
 
 	// Return the unit asset(s) and a cleanup function to close any connection
@@ -205,6 +282,8 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 		}
 	}
 }
+
+
 
 // UnmarshalTraits unmarshals a slice of json.RawMessage into a slice of Traits.
 func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
@@ -220,6 +299,47 @@ func UnmarshalTraits(rawTraits []json.RawMessage) ([]Traits, error) {
 }
 
 // -------------------------------------Unit asset's function methods
+
+// writeForm extracts the value from a Form and writes it to the OPC UA node.
+// This is the shared path used by both on-demand POST requests and the periodic goroutine.
+func (node *UnitAsset) writeForm(f forms.Form) error {
+	switch s := f.(type) {
+	case *forms.SignalA_v1a:
+		return node.write(s.Value)
+	case *forms.SignalB_v1a:
+		return node.write(s.Value)
+	default:
+		return fmt.Errorf("unsupported form type %T", f)
+	}
+}
+
+// write writes a value to the OPC UA node.
+func (node *UnitAsset) write(value interface{}) error {
+	v, err := ua.NewVariant(value)
+	if err != nil {
+		return fmt.Errorf("invalid variant: %v", err)
+	}
+	req := &ua.WriteRequest{
+		NodesToWrite: []*ua.WriteValue{
+			{
+				NodeID:      node.NodeID,
+				AttributeID: ua.AttributeIDValue,
+				Value: &ua.DataValue{
+					EncodingMask: ua.DataValueValue,
+					Value:        v,
+				},
+			},
+		},
+	}
+	resp, err := node.Server.Write(node.Owner.Ctx, req)
+	if err != nil {
+		return fmt.Errorf("OPC UA write failed: %v", err)
+	}
+	if resp.Results[0] != ua.StatusOK {
+		return fmt.Errorf("OPC UA write status not OK: %v", resp.Results[0])
+	}
+	return nil
+}
 
 // browseNode list the node(s)
 func (node *UnitAsset) browseNode(w http.ResponseWriter) {
@@ -487,4 +607,75 @@ func browse(ctx context.Context, n *opcua.Node, path string, level int) ([]NodeD
 		return nil, err
 	}
 	return nodes, nil
+}
+
+// Constructs the OPC UA connection options based on the
+func buildClientOptions(ctx context.Context, endpoint string, sec Security, name pkix.Name) ([]opcua.Option, error) {
+	// Empty config means "no security"
+	if sec.Mode == "" {
+		sec.Mode = "None"
+	}
+	if sec.Policy == "" {
+		sec.Policy = "None"
+	}
+
+	secMode := ua.MessageSecurityModeFromString(sec.Mode)
+
+	// Determine user authentication mode
+	authMode := ua.UserTokenTypeAnonymous
+	if sec.Username != "" {
+		authMode = ua.UserTokenTypeUserName
+	}
+
+	// Fetch server endpoints and select the best match
+	endpoints, err := opcua.GetEndpoints(ctx, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("GetEndpoints: %w", err)
+	}
+	ep, err := opcua.SelectEndpoint(endpoints, sec.Policy, secMode)
+	if err != nil {
+		return nil, fmt.Errorf("SelectEndpoint (policy=%s mode=%s): %w", sec.Policy, sec.Mode, err)
+	}
+	if err := validateEndpointConfig(endpoints, ep.SecurityPolicyURI, ep.SecurityMode, authMode); err != nil {
+		return nil, err
+	}
+
+	opts := []opcua.Option{
+		opcua.SecurityFromEndpoint(ep, authMode),
+	}
+
+	// Channel security: load or generate client certificate
+	if sec.Certfile != "" && sec.Keyfile != "" {
+		appURI := "urn:" + name.CommonName
+		cert, key, err := certgen.EnsureExists(sec.Certfile, sec.Keyfile, name, appURI)
+		if err != nil {
+			return nil, fmt.Errorf("certificate setup: %w", err)
+		}
+		opts = append(opts, opcua.Certificate(cert), opcua.PrivateKey(key))
+	}
+
+	// User authentication
+	switch authMode {
+	case ua.UserTokenTypeAnonymous:
+		opts = append(opts, opcua.AuthAnonymous())
+	case ua.UserTokenTypeUserName:
+		opts = append(opts, opcua.AuthUsername(sec.Username, sec.Password))
+	}
+
+	return opts, nil
+}
+
+func validateEndpointConfig(endpoints []*ua.EndpointDescription, secPolicy string, secMode ua.MessageSecurityMode, authMode ua.UserTokenType) error {
+	for _, e := range endpoints {
+		if e.SecurityMode == secMode && e.SecurityPolicyURI == secPolicy {
+			for _, t := range e.UserIdentityTokens {
+				if t.TokenType == authMode {
+					return nil
+				}
+			}
+		}
+	}
+
+	err := errors.Errorf("server does not support an endpoint with security : %s , %s, %s", secPolicy, secMode, authMode)
+	return err
 }

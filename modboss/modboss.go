@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/sdoque/mbaigo/components"
-	"github.com/sdoque/mbaigo/forms"
 	"github.com/sdoque/mbaigo/usecases"
 )
 
@@ -135,18 +134,8 @@ func (ua *UnitAsset) access(w http.ResponseWriter, r *http.Request) {
 			log.Printf("error extracting the service discovery request %v\n", err)
 			return
 		}
-		// Perform a type assertion to convert the received form to the expected type
-		switch ns := newState.(type) {
-		case *forms.SignalA_v1a:
-			// v is of type *forms.SignalA_v1a
-			fmt.Printf("Received analog signal: %.2f %s\n", ns.Value, ns.Unit)
-			ua.write(ns.Value)
-		case *forms.SignalB_v1a:
-			// v is of type *forms.SignalB_v1a
-			fmt.Printf("Received digital signal: %v\n", ns.Value)
-			ua.write(ns.Value)
-		default:
-			log.Printf("Problem unpacking the new value for %s: unsupported form type %T", ua.Name, ns)
+		if err := ua.writeForm(newState); err != nil {
+			log.Printf("Problem writing value for %s: %v", ua.Name, err)
 			http.Error(w, "Unsupported form type", http.StatusBadRequest)
 			return
 		}

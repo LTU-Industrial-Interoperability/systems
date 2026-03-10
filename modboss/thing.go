@@ -24,6 +24,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sdoque/mbaigo/components"
@@ -40,6 +41,7 @@ type Traits struct {
 	Period 	  	  int                 `json:"period"`
 	Details 	  map[string][]string `json:"details"`
 	conn          *net.Conn           `json:"-"`
+	mu            *sync.Mutex         `json:"-"` // shared across all registers on the same connection
 	IOtype        ioType              `json:"-"`
 	Address       string              `json:"-"`
 	Access        string              `json:"-"`
@@ -165,12 +167,16 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 	fmt.Println("Connected")
 	service := configuredAsset.Services[0]
 
+	// One mutex shared by every register on this connection
+	connMu := &sync.Mutex{}
+
 	var slaveIO []*UnitAsset
 	for kind, gio := range ua.RegisterMap {
 		ioKind := typeOfIO(kind)
 		for _, str := range gio {
 			newUA := &UnitAsset{} // Create a pointer to UnitAsset
 			newUA.conn = &slave
+			newUA.mu = connMu
 			newUA.IOtype = ioKind
 			parts := strings.Split(str, ",")
 			if len(parts) < 4 {
@@ -185,8 +191,8 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 			newUA.ServicesMap = usecases.MakeServiceMap(configuredAsset.Services)
 			newUA.Owner = sys
 			
-			// Set up cervices if configured
-			if ua.Traits.Period >= 0 {
+			// Set up cervices only when periodic consumption is requested (period > 0)
+			if ua.Traits.Period > 0 {
 				newUA.CervicesMap = make(components.Cervices)
 				newCervice := &components.Cervice{
 					Definition: service.Definition,
@@ -200,44 +206,48 @@ func newResource(configuredAsset usecases.ConfigurableAsset, sys *components.Sys
 		}
 	}
 
-	//Start periodic consumption if Period > 0
+	// Start periodic consumption if Period > 0.
+	// Collect writable registers (rw or wo) that have a cervice configured.
 	if ua.Traits.Period > 0 && len(slaveIO) > 0 {
-		go func() {
-			ticker := time.NewTicker(time.Duration(ua.Traits.Period) * time.Second)
-			defer ticker.Stop()
-			
-			for {
-				select {
-				case <-ticker.C:
-					ua := slaveIO[0]
-				
-					payload, err := usecases.GetState(ua.CervicesMap[service.Definition], ua.Owner)
-					if err != nil {
-						log.Printf("Unable to obtain reading: %s\n", err)
-						continue
-					}
-					
-					// Unpack signal
-					signal, ok := payload.(*forms.SignalA_v1a)
-					if !ok {
-						log.Println("Problem unpacking signal")
-						continue
-					}
-					
-					// Write to Modbus
-					log.Printf("Received %.0f from telegrapher, writing to register %s\n", signal.Value, ua.Address)
-					if err := ua.write(int(signal.Value)); err != nil {
-						log.Printf("Failed to write: %v", err)
-					} else {
-						log.Printf("✓ Wrote %.0f to register %s", signal.Value, ua.Address)
-					}
-					
-				case <-sys.Ctx.Done():
-					log.Println("Stopping periodic consumption")
-					return
-				}
+		var writableIOs []*UnitAsset
+		for _, r := range slaveIO {
+			if r.Access == "rw" || r.Access == "wo" {
+				writableIOs = append(writableIOs, r)
 			}
-		}()
+		}
+		if len(writableIOs) == 0 {
+			log.Println("Warning: period > 0 but no writable (rw/wo) registers found — periodic goroutine not started")
+		} else {
+			// Use the first writable register's cervice to fetch the value once per tick;
+			// all registers in this unit_asset share the same consumed service definition.
+			fetcher := writableIOs[0]
+			go func() {
+				ticker := time.NewTicker(time.Duration(ua.Traits.Period) * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						payload, err := usecases.GetState(fetcher.CervicesMap[service.Definition], fetcher.Owner)
+						if err != nil {
+							log.Printf("Unable to obtain reading: %s\n", err)
+							continue
+						}
+						// Write the fetched value to every writable register
+						for _, target := range writableIOs {
+							log.Printf("Writing to register %s\n", target.Address)
+							if err := target.writeForm(payload); err != nil {
+								log.Printf("Failed to write to %s: %v", target.Address, err)
+							} else {
+								log.Printf("Wrote to register %s", target.Address)
+							}
+						}
+					case <-sys.Ctx.Done():
+						log.Println("Stopping periodic consumption")
+						return
+					}
+				}
+			}()
+		}
 	}
 
 	// Return the unit asset(s) and a cleanup function to close any connection
@@ -329,6 +339,10 @@ func (ua *UnitAsset) read() (f forms.Form) {
 	binary.BigEndian.PutUint16(request[8:10], uint16(address))
 	binary.BigEndian.PutUint16(request[10:12], 1)
 
+	// Serialise the full request-response exchange: only one in-flight at a time.
+	ua.mu.Lock()
+	defer ua.mu.Unlock()
+
 	_, err = (*ua.conn).Write(request)
 	if err != nil {
 		log.Printf("Failed to send request: %v", err)
@@ -395,6 +409,19 @@ func (ua *UnitAsset) read() (f forms.Form) {
 	return f
 }
 
+// writeForm extracts the value from a Form and writes it to the Modbus register.
+// This is the shared path used by both on-demand POST requests and the periodic goroutine.
+func (ua *UnitAsset) writeForm(f forms.Form) error {
+	switch s := f.(type) {
+	case *forms.SignalA_v1a:
+		return ua.write(s.Value)
+	case *forms.SignalB_v1a:
+		return ua.write(s.Value)
+	default:
+		return fmt.Errorf("unsupported form type %T", f)
+	}
+}
+
 // Write writes the value of the unit asset (coil or holding register)
 func (ua *UnitAsset) write(value interface{}) error {
 	const unitID uint8 = 1 // same as in read()
@@ -447,6 +474,10 @@ func (ua *UnitAsset) write(value interface{}) error {
 	}
 
 	binary.BigEndian.PutUint16(request[4:6], 6) // Length: always 6 bytes after header
+
+	// Serialise the full request-response exchange: only one in-flight at a time.
+	ua.mu.Lock()
+	defer ua.mu.Unlock()
 
 	_, err = (*ua.conn).Write(request)
 	if err != nil {
