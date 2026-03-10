@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
 )
 
 // systemDirs maps the ESR registry name to the directory inside mbaigo-systems/.
@@ -54,8 +53,7 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	// Own process group so SIGTERM reaches the binary spawned by go run.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		jsonResp(w, http.StatusInternalServerError, fmt.Sprintf("start failed: %v", err))
@@ -106,7 +104,7 @@ func handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	if err := killProcess(cmd); err != nil {
 		jsonResp(w, http.StatusInternalServerError, fmt.Sprintf("kill failed: %v", err))
 		return
 	}
